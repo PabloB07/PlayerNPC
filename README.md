@@ -25,9 +25,9 @@ Este repositorio esta migrado a Paper API `1.21.11`.
 Desde la raiz del proyecto:
 
 ```bash
-gradle paperweightUserdevSetup
-gradle compileJava
-gradle build
+./gradlew paperweightUserdevSetup
+./gradlew compileJava
+./gradlew build
 ```
 
 Artefacto esperado del plugin:
