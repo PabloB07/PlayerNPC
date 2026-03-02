@@ -22,24 +22,22 @@ import dev.sergiferry.spigot.nms.craftbukkit.NMSCraftServer;
 import dev.sergiferry.spigot.nms.craftbukkit.NMSCraftWorld;
 import net.md_5.bungee.api.ChatMessageType;
 import net.md_5.bungee.api.chat.TextComponent;
-import net.minecraft.EnumChatFormat;
-import net.minecraft.core.BlockPosition;
+import net.minecraft.ChatFormatting;
+import net.minecraft.core.BlockPos;
 import net.minecraft.network.protocol.game.*;
-import net.minecraft.network.syncher.DataWatcher;
-import net.minecraft.network.syncher.DataWatcherRegistry;
+import net.minecraft.network.syncher.EntityDataAccessor;
+import net.minecraft.network.syncher.SynchedEntityData;
 import net.minecraft.server.MinecraftServer;
-import net.minecraft.server.level.EntityPlayer;
-import net.minecraft.server.level.WorldServer;
-import net.minecraft.server.network.PlayerConnection;
-import net.minecraft.world.entity.EntityPose;
-import net.minecraft.world.entity.EnumItemSlot;
-import net.minecraft.world.entity.decoration.EntityArmorStand;
+import net.minecraft.server.level.ServerPlayer;
+import net.minecraft.server.level.ServerLevel;
+import net.minecraft.world.entity.Pose;
+import net.minecraft.world.entity.EquipmentSlot;
+import net.minecraft.world.entity.decoration.ArmorStand;
 import net.minecraft.world.scores.Scoreboard;
-import net.minecraft.world.scores.ScoreboardTeam;
-import net.minecraft.world.scores.ScoreboardTeamBase;
+import net.minecraft.world.scores.PlayerTeam;
+import net.minecraft.world.scores.Team;
 import org.apache.commons.io.FileUtils;
 import org.apache.commons.lang.Validate;
-import org.apache.commons.lang.reflect.FieldUtils;
 import org.bukkit.*;
 import org.bukkit.block.Block;
 import org.bukkit.block.BlockFace;
@@ -62,6 +60,7 @@ import java.awt.image.BufferedImage;
 import java.io.File;
 import java.io.IOException;
 import java.io.InputStreamReader;
+import java.lang.reflect.Field;
 import java.net.URL;
 import java.util.*;
 import java.util.function.BiConsumer;
@@ -73,7 +72,7 @@ import java.util.stream.Collectors;
 /**
  * NPC instance per player. An NPC can only be seen by one player. This is because of personalization purposes.
  * With this instance you can create customizable Player NPCs that can be interacted with.
- * NPCs will be only visible to players after creating the EntityPlayer, and show it to the player.
+ * NPCs will be only visible to players after creating the ServerPlayer, and show it to the player.
  *
  * @since 2021.1
  * @author  SergiFerry
@@ -209,7 +208,7 @@ public abstract class NPC {
         setSkin(new NPC.Skin(texture, signature));
     }
 
-    public void setSkin(@Nullable String playerName, Consumer finishAction){
+    public void setSkin(@Nullable String playerName, Consumer<Skin> finishAction){
         if(playerName == null){
             setSkin(Skin.STEVE);
             return;
@@ -538,16 +537,16 @@ public abstract class NPC {
     }
 
     public void setCustomData(String key, String value){
-        if(customData.containsKey(key.toLowerCase()) && value == null){
-            customData.remove(key.toLowerCase());
+        if(customData.containsKey(key.toLowerCase(Locale.ROOT)) && value == null){
+            customData.remove(key.toLowerCase(Locale.ROOT));
             return;
         }
-        customData.put(key.toLowerCase(), value);
+        customData.put(key.toLowerCase(Locale.ROOT), value);
     }
 
     public String getCustomData(String key){
-        if(!customData.containsKey(key.toLowerCase())) return null;
-        return customData.get(key.toLowerCase());
+        if(!customData.containsKey(key.toLowerCase(Locale.ROOT))) return null;
+        return customData.get(key.toLowerCase(Locale.ROOT));
     }
 
     public Set<String> getCustomDataKeys(){
@@ -555,7 +554,7 @@ public abstract class NPC {
     }
 
     public boolean hasCustomData(String key){
-        return customData.containsKey(key.toLowerCase());
+        return customData.containsKey(key.toLowerCase(Locale.ROOT));
     }
 
     /*
@@ -650,7 +649,7 @@ public abstract class NPC {
         return code;
     }
 
-    public String getSimpleCode() { return "" + this.code.replaceFirst("" + getPlugin().getName().toLowerCase() + "\\.", ""); }
+    public String getSimpleCode() { return this.code.replaceFirst(getPlugin().getName().toLowerCase(Locale.ROOT) + "\\.", ""); }
 
     public List<String> getText() {
         return attributes.text;
@@ -724,7 +723,7 @@ public abstract class NPC {
 
         private final Player player;
         private final UUID gameProfileID;
-        private EntityPlayer entityPlayer;
+        private ServerPlayer entityPlayer;
         private NPC.Hologram npcHologram;
         private boolean canSee;
         private boolean hiddenText;
@@ -754,11 +753,13 @@ public abstract class NPC {
             Validate.notNull(super.attributes.skin, "Failed to create the NPC. The NPC.Skin has not been configured.");
             Validate.isTrue(entityPlayer == null, "Failed to create the NPC. This NPC has already been created before.");
             MinecraftServer server = NMSCraftServer.getMinecraftServer();
-            WorldServer worldServer = NMSCraftWorld.getWorldServer(super.world);
+            ServerLevel worldServer = NMSCraftWorld.getWorldServer(super.world);
             GameProfile gameProfile = new GameProfile(gameProfileID, getReplacedCustomName());
             entityPlayer = NMSEntityPlayer.newEntityPlayer(server, worldServer, gameProfile);
             Validate.notNull(entityPlayer, "Error at NMSEntityPlayer");
-            entityPlayer.a(super.x, super.y, super.z, super.yaw, super.pitch);//setLocation
+            entityPlayer.setPos(super.x, super.y, super.z);
+            entityPlayer.setYRot(super.yaw);
+            entityPlayer.setXRot(super.pitch);
             this.npcHologram = new NPC.Hologram(this, player);
             updateSkin();
             updatePose();
@@ -847,7 +848,7 @@ public abstract class NPC {
             //showToPlayer();
             double hideDistance = super.attributes.hideDistance;
             super.attributes.hideDistance = 0.0;
-            Bukkit.getScheduler().scheduleSyncDelayedTask(getPlugin(), ()-> {
+            Bukkit.getScheduler().runTaskLater(getPlugin(), ()-> {
                 super.attributes.hideDistance = hideDistance;
                 showToPlayer();
             },10);
@@ -896,7 +897,7 @@ public abstract class NPC {
 
         public void playAnimation(NPC.Animation animation){
             if(animation.isDeprecated()) return;
-            PacketPlayOutAnimation packet = new PacketPlayOutAnimation(entityPlayer, animation.getId());
+            ClientboundAnimatePacket packet = new ClientboundAnimatePacket(entityPlayer, animation.getId());
             NMSCraftPlayer.sendPacket(player, packet);
         }
 
@@ -914,8 +915,8 @@ public abstract class NPC {
             }
             super.yaw = yaw; //yRot
             super.pitch = pitch; //xRot
-            entityPlayer.o(yaw); //setYRot
-            entityPlayer.p(pitch); //setXRot
+            entityPlayer.setYRot(yaw);
+            entityPlayer.setXRot(pitch);
         }
 
     /*
@@ -982,7 +983,7 @@ public abstract class NPC {
                         return;
                     }
                 }
-                Bukkit.getScheduler().scheduleSyncDelayedTask(getNPCLib().getPlugin(), ()-> {
+                Bukkit.getScheduler().runTaskLater(getNPCLib().getPlugin(), ()-> {
                     Entity near = null;
                     double var0 = getHideDistance();
                     final Location npcLocation = getLocation();
@@ -999,13 +1000,18 @@ public abstract class NPC {
                         if(var3) getGlobal().np(near);
                         else getGlobal().ne(near);
                     }
-                });
+                }, 1L);
             }
         }
 
         protected void updateLocation(Player player){
             if(entityPlayer == null) return;
-            NMSCraftPlayer.sendPacket(player, new PacketPlayOutEntityTeleport(entityPlayer));
+            NMSCraftPlayer.sendPacket(player, ClientboundTeleportEntityPacket.teleport(
+                    entityPlayer.getId(),
+                    net.minecraft.world.entity.PositionMoveRotation.of(entityPlayer),
+                    Collections.emptySet(),
+                    entityPlayer.onGround()
+            ));
         }
 
         protected void updateScoreboard(Player player){
@@ -1013,33 +1019,38 @@ public abstract class NPC {
             Scoreboard scoreboard = null;
             try{ scoreboard = (Scoreboard) NMSCraftScoreboard.getCraftScoreBoardGetHandle().invoke(NMSCraftScoreboard.getCraftScoreBoardClass().cast(player.getScoreboard())); }catch (Exception e){}
             Validate.notNull(scoreboard, "Error at NMSCraftScoreboard");
-            ScoreboardTeam scoreboardTeam = scoreboard.f(getShortUUID()) == null ? new ScoreboardTeam(scoreboard, getShortUUID()) : scoreboard.f(getShortUUID());
-            scoreboardTeam.a(ScoreboardTeamBase.EnumNameTagVisibility.b); //EnumNameTagVisibility.NEVER
-            scoreboardTeam.a(getGlowingColor().getEnumChatFormat()); //setColor
-            ScoreboardTeamBase.EnumTeamPush var1 = ScoreboardTeamBase.EnumTeamPush.b; //EnumTeamPush.NEVER
-            if(isCollidable()) var1 = ScoreboardTeamBase.EnumTeamPush.a; //EnumTeamPush.ALWAYS
-            scoreboardTeam.a(var1); //setTeamPush
-            scoreboard.a(gameProfile.getName(), scoreboardTeam); //setPlayerTeam
-            NMSCraftPlayer.sendPacket(player, PacketPlayOutScoreboardTeam.a(scoreboardTeam, true));
-            NMSCraftPlayer.sendPacket(player, PacketPlayOutScoreboardTeam.a(scoreboardTeam, false));
+            PlayerTeam scoreboardTeam = scoreboard.getPlayerTeam(getShortUUID());
+            if(scoreboardTeam == null) scoreboardTeam = scoreboard.addPlayerTeam(getShortUUID());
+            scoreboardTeam.setNameTagVisibility(Team.Visibility.NEVER);
+            scoreboardTeam.setColor(getGlowingColor().getEnumChatFormat());
+            scoreboardTeam.setCollisionRule(isCollidable() ? Team.CollisionRule.ALWAYS : Team.CollisionRule.NEVER);
+            scoreboard.addPlayerToTeam(gameProfile.name(), scoreboardTeam);
+            NMSCraftPlayer.sendPacket(player, ClientboundSetPlayerTeamPacket.createAddOrModifyPacket(scoreboardTeam, true));
+            NMSCraftPlayer.sendPacket(player, ClientboundSetPlayerTeamPacket.createAddOrModifyPacket(scoreboardTeam, false));
         }
 
         @Override
         protected void updatePlayerRotation(){
             if(entityPlayer == null) return;
-            NMSCraftPlayer.sendPacket(player, new PacketPlayOutEntity.PacketPlayOutEntityLook(NMSEntityPlayer.getEntityID(entityPlayer), (byte) ((super.yaw * 256 / 360)), (byte) ((super.pitch * 256 / 360)), false));
-            NMSCraftPlayer.sendPacket(player, new PacketPlayOutEntityHeadRotation(entityPlayer, (byte) (super.yaw * 256 / 360)));
+            NMSCraftPlayer.sendPacket(player, new ClientboundMoveEntityPacket.Rot(
+                    NMSEntityPlayer.getEntityID(entityPlayer),
+                    (byte) (super.yaw * 256 / 360),
+                    (byte) (super.pitch * 256 / 360),
+                    entityPlayer.onGround()
+            ));
+            NMSCraftPlayer.sendPacket(player, new ClientboundRotateHeadPacket(entityPlayer, (byte) (super.yaw * 256 / 360)));
         }
 
         protected void updateSkin(){
             GameProfile gameProfile = NMSEntityPlayer.getGameProfile(entityPlayer);
-            gameProfile.getProperties().get("textures").clear();
-            gameProfile.getProperties().put("textures", new Property("textures", super.attributes.skin.getTexture(), super.attributes.skin.getSignature()));
+            gameProfile.properties().removeAll("textures");
+            gameProfile.properties().put("textures", new Property("textures", super.attributes.skin.getTexture(), super.attributes.skin.getSignature()));
         }
 
         protected void updatePose(){
-            if(getPose().equals(NPC.Pose.SLEEPING)) entityPlayer.e(new BlockPosition(super.x, super.y, super.z));
-            entityPlayer.b(getPose().getEntityPose());
+            if(getPose().equals(NPC.Pose.SLEEPING)) entityPlayer.setSleepingPos(BlockPos.containing(super.x, super.y, super.z));
+            else entityPlayer.clearSleepingPos();
+            entityPlayer.setPose(getPose().getEntityPose());
         }
 
         protected void move(double x, double y, double z){
@@ -1049,7 +1060,7 @@ public abstract class NPC {
             super.x += x;
             super.y += y;
             super.z += z;
-            entityPlayer.g(super.x, super.y, super.z);
+            entityPlayer.setPos(super.x, super.y, super.z);
             if(npcHologram != null) npcHologram.move(new Vector(x, y, z));
             movePacket(x, y, z);
         }
@@ -1058,33 +1069,21 @@ public abstract class NPC {
             Validate.isTrue(x < 8);
             Validate.isTrue(y < 8);
             Validate.isTrue(z < 8);
-            NMSCraftPlayer.sendPacket(player, new PacketPlayOutEntity.PacketPlayOutRelEntityMove(NMSEntityPlayer.getEntityID(entityPlayer), (short)(x * 4096), (short)(y * 4096), (short)(z * 4096), true));
+            NMSCraftPlayer.sendPacket(player, new ClientboundMoveEntityPacket.Pos(
+                    NMSEntityPlayer.getEntityID(entityPlayer),
+                    (short)(x * 4096),
+                    (short)(y * 4096),
+                    (short)(z * 4096),
+                    entityPlayer.onGround()
+            ));
         }
 
         protected void updateMetadata() {
-            DataWatcher dataWatcher = NMSEntityPlayer.getDataWatcher(entityPlayer);
-            entityPlayer.i(isGlowing());
-            Map<Integer, DataWatcher.Item<?>> map = null;
-            try{ map = (Map<Integer, DataWatcher.Item<?>>) FieldUtils.readDeclaredField(dataWatcher, "f", true); } catch (IllegalAccessException e){}
-            if(map == null) return;
-            //http://wiki.vg/Entities#Entity
-            //https://wiki.vg/Entity_metadata#Entity_Metadata_Format
+            SynchedEntityData dataWatcher = NMSEntityPlayer.getDataWatcher(entityPlayer);
+            entityPlayer.setGlowingTag(isGlowing());
+            entityPlayer.setSharedFlagOnFire(isOnFire());
 
-            //Entity
-            DataWatcher.Item item = map.get(0);
-            byte initialBitMask = (Byte) item.b();
-            byte b = initialBitMask;
-            byte bitMaskIndex = (byte) 0x40;
-            if(isGlowing()) b = (byte) (b | bitMaskIndex);
-            else b = (byte) (b & ~(1 << bitMaskIndex));
-            bitMaskIndex = (byte) 0x01;
-            if(isOnFire()) b = (byte) (b | bitMaskIndex);
-            else b = (byte) (b & ~(1 << bitMaskIndex));
-            dataWatcher.b(DataWatcherRegistry.a.a(0), b);
-            //
-            //Player
-            b = 0x00;
-            //byte b = 0x01 | 0x02 | 0x04 | 0x08 | 0x10 | 0x20 | 0x40;
+            byte b = 0x00;
             NPC.Skin.Parts parts = getSkinParts();
             if(parts.isVisible(Skin.Part.CAPE)) b = (byte) (b | 0x01);
             if(parts.isVisible(Skin.Part.JACKET)) b = (byte) (b | 0x02);
@@ -1093,16 +1092,25 @@ public abstract class NPC {
             if(parts.isVisible(Skin.Part.LEFT_PANTS)) b = (byte) (b | 0x10);
             if(parts.isVisible(Skin.Part.RIGHT_PANTS)) b = (byte) (b | 0x20);
             if(parts.isVisible(Skin.Part.HAT)) b = (byte) (b | 0x40);
-            dataWatcher.b(DataWatcherRegistry.a.a(17), b);
-            //
-            PacketPlayOutEntityMetadata metadataPacket = new PacketPlayOutEntityMetadata(NMSEntityPlayer.getEntityID(entityPlayer), dataWatcher, true);
+
+            try{
+                Field accessorField = net.minecraft.world.entity.Avatar.class.getDeclaredField("DATA_PLAYER_MODE_CUSTOMISATION");
+                accessorField.setAccessible(true);
+                EntityDataAccessor<Byte> accessor = (EntityDataAccessor<Byte>) accessorField.get(null);
+                dataWatcher.set(accessor, b);
+            }
+            catch (NoSuchFieldException | IllegalAccessException ignored){}
+
+            List<SynchedEntityData.DataValue<?>> packedData = dataWatcher.getNonDefaultValues();
+            if(packedData == null) return;
+            ClientboundSetEntityDataPacket metadataPacket = new ClientboundSetEntityDataPacket(NMSEntityPlayer.getEntityID(entityPlayer), packedData);
             NMSCraftPlayer.sendPacket(player, metadataPacket);
         }
 
         protected void updateEquipment(){
-            List<Pair<EnumItemSlot, net.minecraft.world.item.ItemStack>> equipment = new ArrayList<>();
+            List<Pair<EquipmentSlot, net.minecraft.world.item.ItemStack>> equipment = new ArrayList<>();
             for(NPC.Slot slot : NPC.Slot.values()){
-                EnumItemSlot nmsSlot = slot.getNmsEnum(EnumItemSlot.class);
+                EquipmentSlot nmsSlot = slot.getNmsEnum(EquipmentSlot.class);
                 if(!getSlots().containsKey(slot)) getSlots().put(slot, new ItemStack(Material.AIR));
                 ItemStack item = getSlots().get(slot);
                 net.minecraft.world.item.ItemStack craftItem = null;
@@ -1111,22 +1119,22 @@ public abstract class NPC {
                 Validate.notNull(craftItem, "Error at NMSCraftItemStack");
                 equipment.add(new Pair(nmsSlot, craftItem));
             }
-            PacketPlayOutEntityEquipment packet = new PacketPlayOutEntityEquipment(NMSEntityPlayer.getEntityID(entityPlayer), equipment);
+            ClientboundSetEquipmentPacket packet = new ClientboundSetEquipmentPacket(NMSEntityPlayer.getEntityID(entityPlayer), equipment);
             NMSCraftPlayer.sendPacket(player, packet);
         }
 
         private void createPacket(){
             try{
-                NMSCraftPlayer.sendPacket(player, new PacketPlayOutPlayerInfo(PacketPlayOutPlayerInfo.EnumPlayerInfoAction.a, entityPlayer)); //EnumPlayerInfoAction.ADD_PLAYER
-                NMSCraftPlayer.sendPacket(player, new PacketPlayOutNamedEntitySpawn(entityPlayer));
+                NMSCraftPlayer.sendPacket(player, new ClientboundPlayerInfoUpdatePacket(ClientboundPlayerInfoUpdatePacket.Action.ADD_PLAYER, entityPlayer));
+                NMSCraftPlayer.sendPacket(player, new ClientboundAddEntityPacket(entityPlayer, 0, BlockPos.containing(entityPlayer.getX(), entityPlayer.getY(), entityPlayer.getZ())));
             }
             catch (Exception e){ return; }
             shownOnTabList = true;
             updatePlayerRotation();
             if(isShowOnTabList()) return;
-            Bukkit.getScheduler().scheduleSyncDelayedTask(getNPCLib().getPlugin(), ()-> {
+            Bukkit.getScheduler().runTaskLater(getNPCLib().getPlugin(), ()-> {
                 if(!isCreated()) return;
-                NMSCraftPlayer.sendPacket(player, new PacketPlayOutPlayerInfo(PacketPlayOutPlayerInfo.EnumPlayerInfoAction.e, entityPlayer)); //EnumPlayerInfoAction.REMOVE_PLAYER
+                NMSCraftPlayer.sendPacket(player, new ClientboundPlayerInfoRemovePacket(List.of(entityPlayer.getUUID())));
                 shownOnTabList = false;
             }, pluginManager.getTicksUntilTabListHide());
         }
@@ -1136,7 +1144,7 @@ public abstract class NPC {
             createPacket();
             hiddenToPlayer = false;
             if(getText().size() > 0) updateText();
-            Bukkit.getScheduler().scheduleSyncDelayedTask(getNPCLib().getPlugin(), () -> {
+            Bukkit.getScheduler().runTaskLater(getNPCLib().getPlugin(), () -> {
                 if(!isCreated()) return;
                 update();
             }, 1);
@@ -1145,7 +1153,7 @@ public abstract class NPC {
         private void hideToPlayer(){
             if(hiddenToPlayer) return;
             if(shownOnTabList){
-                NMSCraftPlayer.sendPacket(player, new PacketPlayOutPlayerInfo(PacketPlayOutPlayerInfo.EnumPlayerInfoAction.e, entityPlayer)); //EnumPlayerInfoAction.REMOVE_PLAYER
+                NMSCraftPlayer.sendPacket(player, new ClientboundPlayerInfoRemovePacket(List.of(entityPlayer.getUUID())));
                 shownOnTabList = false;
             }
             NMSCraftPlayer.sendPacket(player, NMSPacketPlayOutEntityDestroy.createPacket(NMSEntityPlayer.getEntityID(entityPlayer)));
@@ -1184,7 +1192,7 @@ public abstract class NPC {
                              Getters
     */
 
-        public EntityPlayer getEntity(){ return this.entityPlayer; }
+        public ServerPlayer getEntity(){ return this.entityPlayer; }
 
         public String getShortUUID(){ return gameProfileID.toString().split("-")[1]; }
 
@@ -1328,7 +1336,7 @@ public abstract class NPC {
             Validate.notNull(player, "Cannot add a null Player");
             if(players.containsKey(player)) return;
             if(!ignoreVisibilityRequirement && !meetsVisibilityRequirement(player)) return;
-            NPC.Personal personal = getNPCLib().generatePlayerPersonalNPC(player, getPlugin(), getPlugin().getName().toLowerCase() + "." + "global_" + getSimpleCode(), getLocation());
+            NPC.Personal personal = getNPCLib().generatePlayerPersonalNPC(player, getPlugin(), getPlugin().getName().toLowerCase(Locale.ROOT) + "." + "global_" + getSimpleCode(), getLocation());
             personal.global = this;
             players.put(player, personal);
             if(!selectedPlayers.contains(player.getName())) selectedPlayers.add(player.getName());
@@ -1881,7 +1889,7 @@ public abstract class NPC {
                 if(config.contains("visibility.selectedPlayers") && global.getVisibility().equals(Visibility.SELECTED_PLAYERS)) global.selectedPlayers = config.getStringList("visibility.selectedPlayers");
                 if(config.contains("hologram.alignment")) global.setTextAlignment(config.getVector("hologram.alignment"));
                 if(config.contains("skin.ownPlayer")) global.setOwnPlayerSkin(config.getBoolean("skin.ownPlayer"));
-                Arrays.stream(Skin.Part.values()).filter(x-> config.contains("skin.parts." + x.name().toLowerCase())).forEach(x-> global.getSkinParts().setVisible(x, config.getBoolean("skin.parts." + x.name().toLowerCase())));
+                Arrays.stream(Skin.Part.values()).filter(x-> config.contains("skin.parts." + x.name().toLowerCase(Locale.ROOT))).forEach(x-> global.getSkinParts().setVisible(x, config.getBoolean("skin.parts." + x.name().toLowerCase(Locale.ROOT))));
                 if(config.contains("glow.color")) global.setGlowingColor(Color.valueOf(config.getString("glow.color")));
                 if(config.contains("glow.enabled")) global.setGlowing(config.getBoolean("glow.enabled"));
                 if(config.contains("pose")) global.setPose(Pose.valueOf(config.getString("pose")));
@@ -1894,12 +1902,12 @@ public abstract class NPC {
                 if(config.contains("gazeTracking.type")) global.setGazeTrackingType(GazeTrackingType.valueOf(config.getString("gazeTracking.type")));
                 if(config.contains("distance.hide")) global.setHideDistance(config.getDouble("distance.hide"));
                 for(Slot slot : Slot.values()){
-                    if(!config.contains("slots." + slot.name().toLowerCase())) continue;
+                    if(!config.contains("slots." + slot.name().toLowerCase(Locale.ROOT))) continue;
                     ItemStack item = null;
-                    try{ item = config.getItemStack("slots." + slot.name().toLowerCase()); } catch (Exception e) { config.set("slots." + slot.name().toLowerCase(), new ItemStack(Material.AIR)); }
+                    try{ item = config.getItemStack("slots." + slot.name().toLowerCase(Locale.ROOT)); } catch (Exception e) { config.set("slots." + slot.name().toLowerCase(Locale.ROOT), new ItemStack(Material.AIR)); }
                     global.setItem(slot, item);
                 }
-                Arrays.stream(Slot.values()).filter(x-> config.contains("slots." + x.name().toLowerCase())).forEach(x-> global.setItem(x, config.getItemStack("slots." + x.name().toLowerCase())));
+                Arrays.stream(Slot.values()).filter(x-> config.contains("slots." + x.name().toLowerCase(Locale.ROOT))).forEach(x-> global.setItem(x, config.getItemStack("slots." + x.name().toLowerCase(Locale.ROOT))));
                 if(config.getConfigurationSection("customData") != null){
                     for(String keys : config.getConfigurationSection("customData").getKeys(false)) global.setCustomData(keys, config.getString("customData." + keys));
                 }
@@ -1970,7 +1978,7 @@ public abstract class NPC {
                 }
                 config.setComments("skin.custom.enabled", Arrays.asList("If you want to use a custom texture, set enabled as true, if not, it will use the player name skin.", "To easily get texture and signature use '/npclib getskininfo (playerName)' or https://mineskin.org/"));
                 config.set("skin.ownPlayer", global.isOwnPlayerSkin());
-                Arrays.stream(Skin.Part.values()).forEach(x-> config.set("skin.parts." + x.name().toLowerCase(), global.getSkinParts().isVisible(x)));
+                Arrays.stream(Skin.Part.values()).forEach(x-> config.set("skin.parts." + x.name().toLowerCase(Locale.ROOT), global.getSkinParts().isVisible(x)));
                 config.set("customData", null);
                 for(String keys : global.getCustomDataKeys()) config.set("customData." + keys, global.getCustomData(keys));
                 List<String> lines = global.getText();
@@ -1993,7 +2001,7 @@ public abstract class NPC {
                 config.set("tabList.show", global.isShowOnTabList());
                 config.set("tabList.name", global.getCustomTabListName().replaceAll("§", "&"));
                 config.set("move.speed", global.getMoveSpeed());
-                Arrays.stream(Slot.values()).forEach(x-> config.set("slots." + x.name().toLowerCase(), global.getSlots().get(x)));
+                Arrays.stream(Slot.values()).forEach(x-> config.set("slots." + x.name().toLowerCase(Locale.ROOT), global.getSlots().get(x)));
                 config.set("onFire", global.isOnFire());
                 config.set("interact.cooldown", global.getInteractCooldown());
                 config.set("interact.actions", null);
@@ -2069,7 +2077,7 @@ public abstract class NPC {
             }
 
             public String getFolderPath(){
-                return "plugins/PlayerNPC/persistent/global/" + plugin.getName().toLowerCase() + "/" + id;
+                return NPCStoragePaths.globalPersistentFolderPath(plugin, id);
             }
 
             public NPC.Global getGlobal() {
@@ -2180,60 +2188,60 @@ public abstract class NPC {
          * @see NPC#resetPose()
          * @since 2021.2
          **/
-        STANDING(EntityPose.a),
+        STANDING(net.minecraft.world.entity.Pose.STANDING),
         /**
          * The NPC will be gliding.
          * @since 2022.1
          * */
-        GLIDING(EntityPose.b),
+        GLIDING(net.minecraft.world.entity.Pose.FALL_FLYING),
         /** The NPC will be lying on the ground, looking up, with the arms next to the body.
          * @see NPC#setPose(Pose)
          * @see NPC#setSleeping(boolean)
          * @since 2021.2
          * */
-        SLEEPING(EntityPose.c),
+        SLEEPING(net.minecraft.world.entity.Pose.SLEEPING),
         /** The NPC will be lying on the ground, looking down, with the arms separated from the body. 
          * @see NPC#setPose(Pose)
          * @see NPC#setSwimming(boolean)
          * @since 2021.2
          * */
-        SWIMMING(EntityPose.d),
+        SWIMMING(net.minecraft.world.entity.Pose.SWIMMING),
         /**
          * Entity is riptiding with a trident.
          * <p><strong>This NPCPose does not work</strong></p>
          * @since 2022.1
          */
         @Deprecated
-        SPIN_ATTACK(EntityPose.e),
+        SPIN_ATTACK(net.minecraft.world.entity.Pose.SPIN_ATTACK),
         /** The NPC will be standing on the ground, but crouching (sneaking).
          * @see NPC#setPose(Pose)
          * @see NPC#setCrouching(boolean)
          * @since 2021.2
          * */
-        CROUCHING(EntityPose.f),
+        CROUCHING(net.minecraft.world.entity.Pose.CROUCHING),
         /**
          * Entity is long jumping.
          * <p><strong>This NPCPose does not work</strong></p>
          * @since 2022.1
          * */
         @Deprecated
-        LONG_JUMPING(EntityPose.g),
+        LONG_JUMPING(net.minecraft.world.entity.Pose.LONG_JUMPING),
         /**
          * Entity is dead.
          * <p><strong>This NPCPose does not work</strong></p>
          * @since 2022.1
          * */
         @Deprecated
-        DYING(EntityPose.h),
+        DYING(net.minecraft.world.entity.Pose.DYING),
         ;
 
-        private EntityPose entityPose;
+        private net.minecraft.world.entity.Pose entityPose;
 
-        Pose(EntityPose entityPose){
+        Pose(net.minecraft.world.entity.Pose entityPose){
             this.entityPose = entityPose;
         }
 
-        protected EntityPose getEntityPose() {
+        protected net.minecraft.world.entity.Pose getEntityPose() {
             return entityPose;
         }
 
@@ -2288,27 +2296,27 @@ public abstract class NPC {
      */
     public enum Color{
 
-        BLACK(EnumChatFormat.a),
-        DARK_BLUE(EnumChatFormat.b),
-        DARK_GREEN(EnumChatFormat.c),
-        DARK_AQUA(EnumChatFormat.d),
-        DARK_RED(EnumChatFormat.e),
-        DARK_PURPLE(EnumChatFormat.f),
-        GOLD(EnumChatFormat.g),
-        GRAY(EnumChatFormat.h),
-        DARK_GRAY(EnumChatFormat.i),
-        BLUE(EnumChatFormat.j),
-        GREEN(EnumChatFormat.k),
-        AQUA(EnumChatFormat.l),
-        RED(EnumChatFormat.m),
-        LIGHT_PURPLE(EnumChatFormat.n),
-        YELLOW(EnumChatFormat.o),
-        WHITE(EnumChatFormat.p),
+        BLACK(ChatFormatting.BLACK),
+        DARK_BLUE(ChatFormatting.DARK_BLUE),
+        DARK_GREEN(ChatFormatting.DARK_GREEN),
+        DARK_AQUA(ChatFormatting.DARK_AQUA),
+        DARK_RED(ChatFormatting.DARK_RED),
+        DARK_PURPLE(ChatFormatting.DARK_PURPLE),
+        GOLD(ChatFormatting.GOLD),
+        GRAY(ChatFormatting.GRAY),
+        DARK_GRAY(ChatFormatting.DARK_GRAY),
+        BLUE(ChatFormatting.BLUE),
+        GREEN(ChatFormatting.GREEN),
+        AQUA(ChatFormatting.AQUA),
+        RED(ChatFormatting.RED),
+        LIGHT_PURPLE(ChatFormatting.LIGHT_PURPLE),
+        YELLOW(ChatFormatting.YELLOW),
+        WHITE(ChatFormatting.WHITE),
         ;
 
-        private EnumChatFormat enumChatFormat;
+        private ChatFormatting enumChatFormat;
 
-        Color(EnumChatFormat enumChatFormat){
+        Color(ChatFormatting enumChatFormat){
             this.enumChatFormat = enumChatFormat;
         }
 
@@ -2316,7 +2324,7 @@ public abstract class NPC {
             return ChatColor.valueOf(this.name());
         }
 
-        protected EnumChatFormat getEnumChatFormat(){
+        protected ChatFormatting getEnumChatFormat(){
             return enumChatFormat;
         }
 
@@ -2372,7 +2380,7 @@ public abstract class NPC {
             STEVE.playerName = "MHF_Steve";
             STEVE.playerUUID = "c06f89064c8a49119c29ea1dbd1aab82";
             STEVE.obtainedFrom = ObtainedFrom.MINECRAFT_ORIGINAL;
-            SKIN_CACHE.put(STEVE.playerName.toLowerCase(), STEVE);
+            SKIN_CACHE.put(STEVE.playerName.toLowerCase(Locale.ROOT), STEVE);
             //
             ALEX = new Skin(
                     "ewogICJ0aW1lc3RhbXAiIDogMTY1NjU3Nzg5MTQ2NywKICAicHJvZmlsZUlkIiA6ICI2YWI0MzE3ODg5ZmQ0OTA1OTdmNjBmNjdkOWQ3NmZkOSIsCiAgInByb2ZpbGVOYW1lIiA6ICJNSEZfQWxleCIsCiAgInNpZ25hdHVyZVJlcXVpcmVkIiA6IHRydWUsCiAgInRleHR1cmVzIiA6IHsKICAgICJTS0lOIiA6IHsKICAgICAgInVybCIgOiAiaHR0cDovL3RleHR1cmVzLm1pbmVjcmFmdC5uZXQvdGV4dHVyZS84M2NlZTVjYTZhZmNkYjE3MTI4NWFhMDBlODA0OWMyOTdiMmRiZWJhMGVmYjhmZjk3MGE1Njc3YTFiNjQ0MDMyIiwKICAgICAgIm1ldGFkYXRhIiA6IHsKICAgICAgICAibW9kZWwiIDogInNsaW0iCiAgICAgIH0KICAgIH0KICB9Cn0=",
@@ -2380,7 +2388,7 @@ public abstract class NPC {
             ALEX.playerName = "MHF_Alex";
             ALEX.playerUUID = "6ab4317889fd490597f60f67d9d76fd9";
             ALEX.obtainedFrom = ObtainedFrom.MINECRAFT_ORIGINAL;
-            SKIN_CACHE.put(ALEX.playerName.toLowerCase(), ALEX);
+            SKIN_CACHE.put(ALEX.playerName.toLowerCase(Locale.ROOT), ALEX);
             //
             LOCAL_SKIN_NAMES = new ArrayList<>();
             Bukkit.getScheduler().runTaskAsynchronously(PlayerNPCPlugin.getInstance(), () ->{
@@ -2507,11 +2515,11 @@ public abstract class NPC {
         }
 
         private static String getSkinFolderPath(String playerName){
-            return getSkinsFolderPath() + playerName.toLowerCase();
+            return getSkinsFolderPath() + playerName.toLowerCase(Locale.ROOT);
         }
 
         private static String getSkinsFolderPath(){
-            return "plugins/PlayerNPC/persistent/skins/";
+            return NPCStoragePaths.skinsFolderPath();
         }
 
         public enum Type{
@@ -2552,7 +2560,7 @@ public abstract class NPC {
             try{
                 BufferedImage bufferedImage = ImageIO.read(getAvatarFile());
                 net.md_5.bungee.api.ChatColor[][] avatarData = new net.md_5.bungee.api.ChatColor[8][8];
-                Map m = new HashMap();
+                Map<Integer, Integer> m = new HashMap<>();
                 boolean loaded = false;
                 for(int y = 0; y < 8; y++) {
                     for (int x = 0; x < 8; x++) {
@@ -2561,7 +2569,7 @@ public abstract class NPC {
                         if(rgb[0] > 0 && rgb[1] > 0 && rgb[2] > 0) loaded = true;
                         avatarData[x][y] = net.md_5.bungee.api.ChatColor.of(ColorUtils.getColorFromRGB(rgb));
                         if (!ColorUtils.isGray(rgb)) {
-                            Integer counter = (Integer) m.get(color);
+                            Integer counter = m.get(color);
                             if (counter == null)
                                 counter = 0;
                             counter++;
@@ -2631,7 +2639,7 @@ public abstract class NPC {
 
         public static void fetchSkinAsync(Plugin plugin, String playerName, boolean forceDownload, Consumer<NPC.Skin> action){
             final NPCLib.PluginManager pluginManager = NPCLib.getInstance().getPluginManager(plugin);
-            final String playerNameLowerCase = playerName.toLowerCase();
+            final String playerNameLowerCase = playerName.toLowerCase(Locale.ROOT);
             final String possibleUUID = playerName.length() >= 32 ? playerName.replaceAll("-", "") : null;
             plugin.getServer().getScheduler().runTaskAsynchronously(plugin, ()->{
                 if(!forceDownload && possibleUUID == null){
@@ -2656,7 +2664,7 @@ public abstract class NPC {
                             skin.obtainedFrom = ObtainedFrom.valueOf(config.getString("obtainedFrom"));
                             skin.lastUpdate = config.getString("lastUpdate");
                             SKIN_CACHE.put(playerNameLowerCase, skin);
-                            LOCAL_SKIN_NAMES.remove(playerName.toLowerCase());
+                            LOCAL_SKIN_NAMES.remove(playerName.toLowerCase(Locale.ROOT));
                             action.accept(skin);
                             return;
                         }
@@ -2697,7 +2705,7 @@ public abstract class NPC {
 
         public void delete(){
             if(!canBeDeleted()) throw new IllegalStateException("This skin cannot be deleted.");
-            String playerNameLowerCase = playerName.toLowerCase();
+            String playerNameLowerCase = playerName.toLowerCase(Locale.ROOT);
             if(SKIN_CACHE.containsKey(playerNameLowerCase)) SKIN_CACHE.remove(playerNameLowerCase);
             File folder = new File(getSkinFolderPath(playerNameLowerCase) + "/");
             try { FileUtils.deleteDirectory(folder); } catch (IOException e) { NPCLib.printError(e); }
@@ -2755,19 +2763,19 @@ public abstract class NPC {
 
         public static List<String> getSuggestedSkinNames(){
             List<String> suggested = new ArrayList<>();
-            Bukkit.getOnlinePlayers().forEach(x-> suggested.add(x.getName().toLowerCase()));
-            Skin.SKIN_CACHE.keySet().stream().filter(x -> !suggested.contains(x)).forEach(x-> suggested.add(SKIN_CACHE.get(x).getPlayerName().toLowerCase()));
-            Skin.LOCAL_SKIN_NAMES.stream().filter(x -> !suggested.contains(x)).forEach(x-> suggested.add(x.toLowerCase()));
+            Bukkit.getOnlinePlayers().forEach(x-> suggested.add(x.getName().toLowerCase(Locale.ROOT)));
+            Skin.SKIN_CACHE.keySet().stream().filter(x -> !suggested.contains(x)).forEach(x-> suggested.add(SKIN_CACHE.get(x).getPlayerName().toLowerCase(Locale.ROOT)));
+            Skin.LOCAL_SKIN_NAMES.stream().filter(x -> !suggested.contains(x)).forEach(x-> suggested.add(x.toLowerCase(Locale.ROOT)));
             return suggested;
         }
 
         private static String[] getSkinGameProfile(Player player){
             try{
-                EntityPlayer p = NMSCraftPlayer.getEntityPlayer(player);
+                ServerPlayer p = NMSCraftPlayer.getEntityPlayer(player);
                 GameProfile profile = NMSEntityPlayer.getGameProfile(p);
-                Property property = profile.getProperties().get("textures").iterator().next();
-                String texture = property.getValue();
-                String signature = property.getSignature();
+                Property property = profile.properties().get("textures").iterator().next();
+                String texture = property.value();
+                String signature = property.signature();
                 return new String[]{texture, signature};
             }
             catch (Exception e){
@@ -3967,7 +3975,7 @@ public abstract class NPC {
         private final NPC npc;
         private final Player player;
         private Location location;
-        private HashMap<Integer, List<EntityArmorStand>> lines;
+        private HashMap<Integer, List<ArmorStand>> lines;
         private boolean canSee;
 
         protected Hologram(NPC npc, Player player) {
@@ -3994,17 +4002,17 @@ public abstract class NPC {
                 break;
             }
             NPC.Hologram.Opacity textOpacity = getLinesOpacity().getOrDefault(line, npc.getTextOpacity());
-            WorldServer world = null;
-            try{ world = (WorldServer) NMSCraftWorld.getCraftWorldGetHandle().invoke(NMSCraftWorld.getCraftWorldClass().cast(location.getWorld()), new Object[0]);}catch (Exception e){}
+            ServerLevel world = null;
+            try{ world = (ServerLevel) NMSCraftWorld.getCraftWorldGetHandle().invoke(NMSCraftWorld.getCraftWorldClass().cast(location.getWorld()), new Object[0]);}catch (Exception e){}
             Validate.notNull(world, "Error at NMSCraftWorld");
-            List<EntityArmorStand> armorStands = new ArrayList<>();
+            List<ArmorStand> armorStands = new ArrayList<>();
             for(int i = 1; i <= textOpacity.getTimes(); i++){
-                EntityArmorStand armor = new EntityArmorStand(world, location.getX(), location.getY() + (npc.getLineSpacing() * ((getText().size() - line))), location.getZ());
-                armor.n(true); //setCustomNameVisible
-                armor.e(true); //setNoGravity
+                ArmorStand armor = new ArmorStand(world, location.getX(), location.getY() + (npc.getLineSpacing() * ((getText().size() - line))), location.getZ());
+                armor.setCustomNameVisible(true);
+                armor.setNoGravity(true);
                 NMSEntity.setCustomName(armor, "§f");
-                armor.j(true); //setInvisible
-                armor.t(true); //setMarker
+                armor.setInvisible(true);
+                NMSEntity.setArmorStandMarker(armor, true);
                 armorStands.add(armor);
             }
             lines.put(line, armorStands);
@@ -4014,17 +4022,18 @@ public abstract class NPC {
         protected void setLine(int line, String text) {
             if(!lines.containsKey(line)) return;
             String replacedText = NPC.Placeholders.replace(npc, player, text);
-            for(EntityArmorStand as : lines.get(line)){
-                as.e(true); //setNoGravity
-                as.j(true); //setInvisible
+            for(ArmorStand as : lines.get(line)){
+                as.setNoGravity(true);
+                as.setInvisible(true);
                 NMSEntity.setCustomName(as, replacedText);
-                as.n(text != null && text != ""); //setCustomNameVisible
+                as.setCustomNameVisible(text != null && !text.isEmpty());
             }
         }
 
         protected String getLine(int line) {
             if(!lines.containsKey(line)) return "";
-            return lines.get(line).get(0).Z().getString(); //Z getCustomName
+            net.minecraft.network.chat.Component customName = lines.get(line).get(0).getCustomName();
+            return customName == null ? "" : customName.getString();
         }
 
         protected boolean hasLine(int line){
@@ -4040,9 +4049,12 @@ public abstract class NPC {
                 if(!personal.isShownOnClient()) return;
             }
             for(Integer line : lines.keySet()){
-                for(EntityArmorStand armor : lines.get(line)){
+                for(ArmorStand armor : lines.get(line)){
                     NMSPacketPlayOutSpawnEntity.sendPacket(getPlayer(), armor);
-                    NMSCraftPlayer.sendPacket(getPlayer(), new PacketPlayOutEntityMetadata(armor.ae(), armor.ai(), true)); //ae getID //ai getDataWatcher
+                    List<SynchedEntityData.DataValue<?>> packedData = armor.getEntityData().getNonDefaultValues();
+                    if(packedData != null){
+                        NMSCraftPlayer.sendPacket(getPlayer(), new ClientboundSetEntityDataPacket(armor.getId(), packedData));
+                    }
                 }
             }
             canSee = true;
@@ -4051,8 +4063,8 @@ public abstract class NPC {
         protected void hide(){
             if(!canSee) return;
             for (Integer in : lines.keySet()) {
-                for(EntityArmorStand armor : lines.get(in)){
-                    NMSCraftPlayer.sendPacket(getPlayer(), NMSPacketPlayOutEntityDestroy.createPacket(armor.ae())); //ae getID
+                for(ArmorStand armor : lines.get(in)){
+                    NMSCraftPlayer.sendPacket(getPlayer(), NMSPacketPlayOutEntityDestroy.createPacket(armor.getId()));
                 }
             }
             canSee = false;
@@ -4060,15 +4072,19 @@ public abstract class NPC {
 
         protected void move(Vector vector){
             this.location.add(vector);
-            PlayerConnection playerConnection = NMSCraftPlayer.getPlayerConnection(getPlayer());
             for (Integer in : lines.keySet()) {
-                for(EntityArmorStand armor : lines.get(in)){
+                for(ArmorStand armor : lines.get(in)){
                     Location location = armor.getBukkitEntity().getLocation();
                     double fx = location.getX() + vector.getX();
                     double fy = location.getY() + vector.getY();
                     double fz = location.getZ() + vector.getZ();
-                    armor.g(fx, fy, fz);
-                    playerConnection.a(new PacketPlayOutEntityTeleport(armor));
+                    armor.setPos(fx, fy, fz);
+                    NMSCraftPlayer.sendPacket(getPlayer(), new ClientboundTeleportEntityPacket(
+                            armor.getId(),
+                            net.minecraft.world.entity.PositionMoveRotation.of(armor),
+                            Collections.emptySet(),
+                            armor.onGround()
+                    ));
                 }
             }
         }

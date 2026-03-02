@@ -11,9 +11,6 @@ import dev.sergiferry.spigot.nms.craftbukkit.NMSCraftPlayer;
 import io.netty.channel.Channel;
 import io.netty.channel.ChannelHandlerContext;
 import io.netty.handler.codec.MessageToMessageDecoder;
-import net.minecraft.network.protocol.Packet;
-import net.minecraft.network.protocol.game.PacketPlayInUseEntity;
-import net.minecraft.world.EnumHand;
 import org.apache.commons.lang.Validate;
 import org.bukkit.Bukkit;
 import org.bukkit.ChatColor;
@@ -53,6 +50,7 @@ import java.util.stream.Collectors;
 public class NPCLib implements Listener {
 
     private static NPCLib instance;
+    private static final Set<String> INTERACT_PACKET_CLASS_NAMES = Set.of("PacketPlayInUseEntity", "ServerboundInteractPacket");
 
     private final PlayerNPCPlugin plugin;
     private final HashMap<Player, PlayerManager> playerManager;
@@ -102,7 +100,7 @@ public class NPCLib implements Listener {
         Validate.notNull(code, "You cannot create an NPC with a null code");
         Validate.notNull(location, "You cannot create an NPC with a null Location");
         Validate.notNull(location.getWorld(), "You cannot create NPC with a null world");
-        Validate.isTrue(!code.toLowerCase().startsWith("global_"), "You cannot create NPC with global tag");
+        Validate.isTrue(!code.toLowerCase(Locale.ROOT).startsWith("global_"), "You cannot create NPC with global tag");
         Validate.isTrue(isRegistered(plugin), "This plugin is not registered on NPCLib");
         return generatePlayerPersonalNPC(player, plugin, a(plugin, code), location);
     }
@@ -198,7 +196,7 @@ public class NPCLib implements Listener {
     public Set<NPC.Global> getAllGlobalNPCs(@Nonnull Plugin plugin){
         Validate.notNull(plugin, "Plugin must not be null");
         Set<NPC.Global> npcs = new HashSet<>();
-        globalNPCs.keySet().stream().filter(x-> x.startsWith(plugin.getName().toLowerCase() + ".")).forEach(x-> npcs.add(getGlobalNPC(x)));
+        globalNPCs.keySet().stream().filter(x-> x.startsWith(plugin.getName().toLowerCase(Locale.ROOT) + ".")).forEach(x-> npcs.add(getGlobalNPC(x)));
         return npcs;
     }
 
@@ -292,13 +290,13 @@ public class NPCLib implements Listener {
     }
 
     private String a(Plugin plugin, String code){
-        String b = plugin.getName().toLowerCase() + ".";
+        String b = plugin.getName().toLowerCase(Locale.ROOT) + ".";
         if(code == null) return b;
         return b + code;
     }
 
     private File checkFileExists(){
-        File file = new File("plugins/PlayerNPC/config.yml");
+        File file = NPCStoragePaths.configFile();
         boolean exist = file.exists();
         if(!exist) try{ file.createNewFile();} catch (Exception e){ printError(e); };
         return file;
@@ -473,7 +471,7 @@ public class NPCLib implements Listener {
 
         private void loadPersistentNPCs(){
             Bukkit.getConsoleSender().sendMessage(PlayerNPCPlugin.getInstance().getPrefix() + "§7Loading Persistent Global NPCs for plugin §e" + plugin.getName());
-            File folder = new File("plugins/PlayerNPC/persistent/global/" + plugin.getName().toLowerCase() + "/");
+            File folder = NPCStoragePaths.globalPersistentFolder(plugin);
             if(!folder.exists()) { folder.mkdirs(); }
             boolean empty = true;
             for (File f : folder.listFiles()) {
@@ -516,7 +514,7 @@ public class NPCLib implements Listener {
         }
 
         public String getCode(String simpleCode){
-            String b = plugin.getName().toLowerCase() + ".";
+            String b = plugin.getName().toLowerCase(Locale.ROOT) + ".";
             if(simpleCode == null) return b;
             return b + simpleCode;
         }
@@ -750,9 +748,9 @@ public class NPCLib implements Listener {
                 channel = NMSNetworkManager.getChannel(NMSNetworkManager.getNetworkManager(npcPlayerManager.getPlayer())); //1.18 era .a & 1.19 es .b
                 if(channel.pipeline() == null) return;
                 if(channel.pipeline().get("PacketInjector") != null) return;
-                channel.pipeline().addAfter("decoder", "PacketInjector", new MessageToMessageDecoder<PacketPlayInUseEntity>() {
+                channel.pipeline().addAfter("decoder", "PacketInjector", new MessageToMessageDecoder<Object>() {
                     @Override
-                    protected void decode(ChannelHandlerContext channel, PacketPlayInUseEntity packet, List<Object> arg) throws Exception {
+                    protected void decode(ChannelHandlerContext channel, Object packet, List<Object> arg) throws Exception {
                         arg.add(packet);
                         readPacket(packet);
                     }
@@ -767,19 +765,44 @@ public class NPCLib implements Listener {
                 channel = null;
             }
 
-            private void readPacket(Packet<?> packet) {
+            private void readPacket(Object packet) {
                 if(packet == null) return;
-                if (!packet.getClass().getSimpleName().equalsIgnoreCase("PacketPlayInUseEntity")) return;
-                int id = (int) NMSUtils.getValue(packet, "a");
-                NPC.Interact.ClickType clickType;
-                try{
-                    Object action = NMSUtils.getValue(packet, "b");
-                    EnumHand hand = (EnumHand) NMSUtils.getValue(action, "a");
-                    if(hand != null) clickType = NPC.Interact.ClickType.RIGHT_CLICK;
-                    else clickType = NPC.Interact.ClickType.LEFT_CLICK;
-                }
-                catch (Exception e){ clickType = NPC.Interact.ClickType.LEFT_CLICK; }
+                if(!isInteractPacket(packet)) return;
+                Integer id = resolveEntityId(packet);
+                if(id == null) return;
+                NPC.Interact.ClickType clickType = resolveClickType(packet);
                 interact(id, clickType);
+            }
+
+            private boolean isInteractPacket(Object packet){
+                return INTERACT_PACKET_CLASS_NAMES.contains(packet.getClass().getSimpleName());
+            }
+
+            private Integer resolveEntityId(Object packet){
+                Object id = readField(packet, "a", "entityId");
+                if(id instanceof Integer) return (Integer) id;
+                return null;
+            }
+
+            private NPC.Interact.ClickType resolveClickType(Object packet){
+                Object action = readField(packet, "b", "action");
+                Object hand = readField(action, "a", "hand");
+                if(hand == null) return NPC.Interact.ClickType.LEFT_CLICK;
+                String handName = hand.toString().toUpperCase(Locale.ROOT);
+                if(handName.contains("MAIN") || handName.contains("OFF") || handName.contains("RIGHT")) return NPC.Interact.ClickType.RIGHT_CLICK;
+                return NPC.Interact.ClickType.LEFT_CLICK;
+            }
+
+            private Object readField(Object instance, String... names){
+                if(instance == null) return null;
+                for(String name : names){
+                    try{
+                        Object value = NMSUtils.getValue(instance, name);
+                        if(value != null) return value;
+                    }
+                    catch (Exception ignored){}
+                }
+                return null;
             }
 
             private void interact(Integer id, NPC.Interact.ClickType clickType){
@@ -792,9 +815,9 @@ public class NPCLib implements Listener {
                 if(npc == null) return;
                 if(lastClick.containsKey(npc) && System.currentTimeMillis() - lastClick.get(npc) < npc.getInteractCooldown()) return;
                 lastClick.put(npc, System.currentTimeMillis());
-                Bukkit.getScheduler().scheduleSyncDelayedTask(npcPlayerManager.getNPCLib().getPlugin(), ()-> {
+                Bukkit.getScheduler().runTaskLater(npcPlayerManager.getNPCLib().getPlugin(), ()-> {
                     npc.interact(npcPlayerManager.getPlayer(), clickType);
-                }, 1);
+                }, 1L);
             }
 
             protected PlayerManager getPlayerManager() {

@@ -1,0 +1,19 @@
+main: dev.sergiferry.playernpc.PlayerNPCPlugin
+name: PlayerNPC
+description: PlayerNPC
+author: SergiFerry
+version: 2022.7-paper-1.21.11
+api-version: "1.21"
+commands:
+  npclib:
+    description: Edit NPC Lib's configuration
+    permission: playernpc.command
+    usage: /npclib
+  npcglobal:
+    description: Edit Global NPC's attributes
+    permission: playernpc.command
+    usage: /npcglobal
+  npcpersonal:
+    description: Edit Personal NPC's attributes
+    permission: playernpc.command
+    usage: /npcpersonal
