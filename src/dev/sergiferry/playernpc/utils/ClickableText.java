@@ -42,15 +42,15 @@ public class ClickableText {
     }
 
     public ClickableText(String text, String hover) {
-        this(text, new HoverEvent(HoverEvent.Action.SHOW_TEXT, new Content[]{new Text(hover)}), null);
+        this(text, ClickableText.hoverText(hover), null);
     }
 
     public ClickableText(String text, String hover, ClickEvent clickEvent) {
-        this(text, new HoverEvent(HoverEvent.Action.SHOW_TEXT, new Content[]{new Text(hover)}), clickEvent);
+        this(text, ClickableText.hoverText(hover), clickEvent);
     }
 
     public ClickableText(String text, String hover, ClickEvent.Action action, String actionString) {
-        this(text, new HoverEvent(HoverEvent.Action.SHOW_TEXT, new Content[]{new Text(hover)}), new ClickEvent(action, actionString));
+        this(text, ClickableText.hoverText(hover), new ClickEvent(action, actionString));
     }
 
     public ClickableText(String text, ClickEvent.Action action, String actionString) {
@@ -77,16 +77,19 @@ public class ClickableText {
 
     public ClickableText add(String text, ChatColor color, String hover) {
         TextComponent textComponent = ClickableText.get(text, color);
-        textComponent.setHoverEvent(new HoverEvent(HoverEvent.Action.SHOW_TEXT, new Content[]{new Text(hover)}));
+        HoverEvent hoverEvent = ClickableText.hoverText(hover);
+        if (hoverEvent != null) {
+            textComponent.setHoverEvent(hoverEvent);
+        }
         return this.add(textComponent);
     }
 
     public ClickableText add(String text, String hover) {
-        return this.add(text, new HoverEvent(HoverEvent.Action.SHOW_TEXT, new Content[]{new Text(hover)}), null);
+        return this.add(text, ClickableText.hoverText(hover), null);
     }
 
     public ClickableText add(String text, String hover, ClickEvent clickEvent) {
-        return this.add(text, new HoverEvent(HoverEvent.Action.SHOW_TEXT, new Content[]{new Text(hover)}), clickEvent);
+        return this.add(text, ClickableText.hoverText(hover), clickEvent);
     }
 
     public ClickableText add(String text, ClickEvent.Action action, String actionString) {
@@ -94,7 +97,7 @@ public class ClickableText {
     }
 
     public ClickableText add(String text, String hover, ClickEvent.Action action, String actionString) {
-        return this.add(text, new HoverEvent(HoverEvent.Action.SHOW_TEXT, new Content[]{new Text(hover)}), new ClickEvent(action, actionString));
+        return this.add(text, ClickableText.hoverText(hover), new ClickEvent(action, actionString));
     }
 
     public ClickableText add(String text, String hover, boolean clickAction, ClickEvent.Action action, String actionString) {
@@ -139,5 +142,11 @@ public class ClickableText {
     public static TextComponent get(String text, HoverEvent hoverEvent, ClickEvent clickEvent) {
         return ClickableText.get(text, null, hoverEvent, clickEvent);
     }
-}
 
+    private static HoverEvent hoverText(String hover) {
+        if (hover == null || hover.isBlank()) {
+            return null;
+        }
+        return new HoverEvent(HoverEvent.Action.SHOW_TEXT, new Content[]{new Text(hover)});
+    }
+}
